@@ -12,7 +12,7 @@
 
 {-# OPTIONS_GHC -fno-warn-unused-imports #-}
 
-module Week03.Vesting where
+module Week03.Trade where
 
 import           Control.Monad        hiding (fmap)
 import           Data.Aeson           (ToJSON, FromJSON)
