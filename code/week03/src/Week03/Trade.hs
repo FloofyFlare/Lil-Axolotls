@@ -1,137 +1,180 @@
-{-# LANGUAGE DataKinds           #-}
-{-# LANGUAGE DeriveAnyClass      #-}
-{-# LANGUAGE DeriveGeneric       #-}
-{-# LANGUAGE FlexibleContexts    #-}
-{-# LANGUAGE NoImplicitPrelude   #-}
-{-# LANGUAGE OverloadedStrings   #-}
-{-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TemplateHaskell     #-}
-{-# LANGUAGE TypeApplications    #-}
-{-# LANGUAGE TypeFamilies        #-}
-{-# LANGUAGE TypeOperators       #-}
+{-# LANGUAGE DataKinds             #-}
+{-# LANGUAGE DeriveAnyClass        #-}
+{-# LANGUAGE DeriveGeneric         #-}
+{-# LANGUAGE FlexibleContexts      #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE NoImplicitPrelude     #-}
+{-# LANGUAGE OverloadedStrings     #-}
+{-# LANGUAGE ScopedTypeVariables   #-}
+{-# LANGUAGE TemplateHaskell       #-}
+{-# LANGUAGE TypeApplications      #-}
+{-# LANGUAGE TypeFamilies          #-}
+{-# LANGUAGE TypeOperators         #-}
+
+module Week03.Vesting where
 
 {-# OPTIONS_GHC -fno-warn-unused-imports #-}
 
-module Week03.Trade where
-
-import           Control.Monad        hiding (fmap)
-import           Data.Aeson           (ToJSON, FromJSON)
-import           Data.Map             as Map
-import           Data.Text            (Text)
-import           Data.Void            (Void)
-import           GHC.Generics         (Generic)
-import           Plutus.Contract
-import           PlutusTx             (Data (..))
+import           Control.Monad          hiding (fmap)
+import           Data.Aeson             (ToJSON, FromJSON)
+import           Data.Text              (Text)
+import           Data.Void              (Void)
+import           GHC.Generics           (Generic)
+import           Data.Map              as Map hiding (foldl)
+import           Plutus.Contract        as Contract
+import           Ledger.Address         as Add
 import qualified PlutusTx
+import           Ledger                 hiding (mint, singleton)
+import           Ledger.Constraints     as Constraints
+import qualified Ledger.Typed.Scripts   as Scripts
+import           Ledger.Value           as Value
+import           Playground.Contract    (printJson, printSchemas, ensureKnownCurrencies, stage, ToSchema)
+import           Playground.TH          (mkKnownCurrencies, mkSchemaDefinitions)
+import           Playground.Types       (KnownCurrency (..))
+import           Prelude                (IO, Show (..), String)
+import           Text.Printf            (printf)
+import           Wallet.Emulator.Wallet
+import qualified PlutusTx.Builtins      as Builtins
+import           Plutus.V1.Ledger.Ada as Ada
+import           Ledger.Tx              (scriptTxOut, ChainIndexTxOut)
+import           Plutus.ChainIndex.Tx 
+import           Playground.Contract
 import           PlutusTx.Prelude     hiding (Semigroup(..), unless)
-import           Ledger               hiding (singleton)
-import           Ledger.Constraints   (TxConstraints)
-import qualified Ledger.Constraints   as Constraints
-import qualified Ledger.Typed.Scripts as Scripts
-import           Ledger.Ada           as Ada
-import           Playground.Contract  (printJson, printSchemas, ensureKnownCurrencies, stage, ToSchema)
-import           Playground.TH        (mkKnownCurrencies, mkSchemaDefinitions)
-import           Playground.Types     (KnownCurrency (..))
-import           Prelude              (IO, Semigroup (..), Show (..), String)
-import           Text.Printf          (printf)
+import           Prelude              (IO, Semigroup (..), String, Show(..))
+import qualified Prelude              as Haskell
+import           Cardano.Api hiding (Value, TxOut,Address)
+import           Cardano.Api.Shelley hiding (Value, TxOut, Address)
+import           Plutus.ChainIndex as Chain
+import           Data.ByteString.Lazy.Char8
 
-data VestingDatum = VestingDatum
-    { beneficiary :: PaymentPubKeyHash
-    , deadline    :: POSIXTime
-    } deriving Show
 
-PlutusTx.unstableMakeIsData ''VestingDatum
+minADA :: Value
+minADA = Ada.lovelaceValueOf 2000000
 
+price :: Value 
+price = Ada.lovelaceValueOf 25000000
+
+data ContractInfo = ContractInfo
+    { policyID :: !CurrencySymbol
+    , walletOwner :: !PubKeyHash
+    } deriving (Generic, ToJSON, FromJSON)
+
+
+contractInfo = ContractInfo 
+    { policyID = "8b0dbdd6504ff8f129400ab3b21f12a52ffb09f0b3cff594cb5bb868"
+    , walletOwner = "a2c20c77887ace1cd986193e4e75babd8993cfd56995cd5cfce609c2"
+    }
+
+--purchase portion of the contract 
+data LootBoxData
+instance Scripts.ValidatorTypes LootBoxData where
+    type instance RedeemerType LootBoxData = ()
+    type instance DatumType LootBoxData = Integer
+
+--Checks the validatorHash to make sure the LootBox has tokens to host the transaction
+--If never changed by the end of the project use the builtins script validator
 {-# INLINABLE mkValidator #-}
-mkValidator :: VestingDatum -> () -> ScriptContext -> Bool
-mkValidator dat () ctx = traceIfFalse "beneficiary's signature missing" signedByBeneficiary &&
-                         traceIfFalse "deadline not reached" deadlineReached
-  where
-    info :: TxInfo
-    info = scriptContextTxInfo ctx
+mkValidator :: Integer -> () -> ScriptContext -> Bool
+mkValidator i x ctx = True
 
-    signedByBeneficiary :: Bool
-    signedByBeneficiary = txSignedBy info $ unPaymentPubKeyHash $ beneficiary dat
-
-    deadlineReached :: Bool
-    deadlineReached = contains (from $ deadline dat) $ txInfoValidRange info
-
-data Vesting
-instance Scripts.ValidatorTypes Vesting where
-    type instance DatumType Vesting = VestingDatum
-    type instance RedeemerType Vesting = ()
-
-typedValidator :: Scripts.TypedValidator Vesting
-typedValidator = Scripts.mkTypedValidator @Vesting
+lootBox :: Scripts.TypedValidator LootBoxData
+lootBox = Scripts.mkTypedValidator @LootBoxData
     $$(PlutusTx.compile [|| mkValidator ||])
-    $$(PlutusTx.compile [|| wrap ||])
-  where
-    wrap = Scripts.wrapValidator @VestingDatum @()
-
-validator :: Validator
-validator = Scripts.validatorScript typedValidator
+    $$(PlutusTx.compile [|| wrap ||]) where
+        wrap = Scripts.wrapValidator @Integer @()
 
 valHash :: Ledger.ValidatorHash
-valHash = Scripts.validatorHash typedValidator
+valHash = Scripts.validatorHash lootBox
 
-scrAddress :: Ledger.Address
-scrAddress = scriptAddress validator
+validate :: Validator
+validate = Scripts.validatorScript lootBox
 
-data GiveParams = GiveParams
-    { gpBeneficiary :: !PaymentPubKeyHash
-    , gpDeadline    :: !POSIXTime
-    , gpAmount      :: !Integer
+valAddress :: Address
+valAddress = Scripts.validatorAddress lootBox
+
+
+
+--Start of minting portion of the smart contract
+
+{-# INLINABLE mkPolicy #-}
+mkPolicy :: PubKeyHash -> () -> ScriptContext -> Bool
+mkPolicy pkh () ctx = txSignedBy (scriptContextTxInfo ctx) pkh
+
+policy :: PubKeyHash -> Scripts.MintingPolicy
+policy pkh = mkMintingPolicyScript $
+    $$(PlutusTx.compile [|| Scripts.wrapMintingPolicy . mkPolicy||])
+    `PlutusTx.applyCode`
+    (PlutusTx.liftCode pkh)
+
+--dont need
+curSymbol :: PubKeyHash -> CurrencySymbol
+curSymbol = scriptCurrencySymbol . policy
+
+data AmountParams = AmountParams
+    { apAmount    :: !Integer
     } deriving (Generic, ToJSON, FromJSON, ToSchema)
 
-type VestingSchema =
-            Endpoint "give" GiveParams
-        .\/ Endpoint "grab" ()
+PlutusTx.makeLift ''AmountParams
 
-give :: AsContractError e => GiveParams -> Contract w s e ()
-give gp = do
-    let dat = VestingDatum
-                { beneficiary = gpBeneficiary gp
-                , deadline    = gpDeadline gp
-                }
-        tx  = Constraints.mustPayToTheScript dat $ Ada.lovelaceValueOf $ gpAmount gp
-    ledgerTx <- submitTxConstraints typedValidator tx
+data LockParams = LockParams
+    { lpDatum    :: !Integer
+    , lpTokensPerOutput   :: !Integer
+    , nameOfToken   :: !ByteString
+    } deriving (Generic, ToJSON, FromJSON, ToSchema)
+
+PlutusTx.makeLift ''LockParams
+
+--Start of endpoints
+type SignedSchema = 
+    Endpoint "lock" LockParams
+     .\/ Endpoint "purchase" ()
+
+fillInt :: String -> String 
+fillInt str | length str == 1     = "000" ++ str
+            | length str == 2     = "00" ++ str
+            | length str == 3     = "0" ++ str
+            | length str == 0     = str
+
+nameResult :: ByteString -> Integer -> BuiltinByteString 
+nameResult str int = toBuiltin $ pack $ (unpack str) ++ (fillInt $ show int) 
+
+
+lock :: LockParams -> Contract w SignedSchema Text ()
+lock lp =  do
+-- make a recusive function that allows for the creation of a 1000 utxos of diffrent datums from a wallet (cheap if implemented correctly) 
+    let v   = Value.singleton (policyID contractInfo) (nameOfToken contractInfo) (lpTokensPerOutput lp) <> minADA
+        tx  =   foldl
+                (\acc i -> acc <> (Constraints.mustPayToTheScript (i) $ v))
+                (TxConstraints [] [] [])
+                [(lpDatum lp * 1000)..((lpDatum lp +1) * 1000)]
+                
+    void (submitTxConstraints lootBox tx)    
+
+--This file works 
+purchase :: () -> Contract w SignedSchema Text ()
+purchase _ =  do
+    utxos <- utxosAt valAddress
+    unless (Haskell.null utxos) $ do
+    let outputs = Map.toList utxos
+        r      = Redeemer $ PlutusTx.toBuiltinData ()
+        (oref, o) = head outputs
+        ppkh     = walletOwner contractInfo
+        lookups = Constraints.unspentOutputs utxos <>
+                  Constraints.otherScript validate <>
+                  Constraints.typedValidatorLookups lootBox
+        tx      = mustPayToPubKey (Add.PaymentPubKeyHash ppkh) price <> mconcat [Constraints.mustSpendScriptOutput oref unitRedeemer ] 
+    ledgerTx <- submitTxConstraintsWith @LootBoxData lookups tx
     void $ awaitTxConfirmed $ getCardanoTxId ledgerTx
-    logInfo @String $ printf "made a gift of %d lovelace to %s with deadline %s"
-        (gpAmount gp)
-        (show $ gpBeneficiary gp)
-        (show $ gpDeadline gp)
+    logInfo @String $ "loot box used"
 
-grab :: forall w s e. AsContractError e => Contract w s e ()
-grab = do
-    now   <- currentTime
-    pkh   <- ownPaymentPubKeyHash
-    utxos <- Map.filter (isSuitable pkh now) <$> utxosAt scrAddress
-    if Map.null utxos
-        then logInfo @String $ "no gifts available"
-        else do
-            let orefs   = fst <$> Map.toList utxos
-                lookups = Constraints.unspentOutputs utxos  <>
-                          Constraints.otherScript validator
-                tx :: TxConstraints Void Void
-                tx      = mconcat [Constraints.mustSpendScriptOutput oref unitRedeemer | oref <- orefs] <>
-                          Constraints.mustValidateIn (from now)
-            ledgerTx <- submitTxConstraintsWith @Void lookups tx
-            void $ awaitTxConfirmed $ getCardanoTxId ledgerTx
-            logInfo @String $ "collected gifts"
+-- Sort through the Utxos so that it only collect the right one
+
+endpoints :: Contract () SignedSchema Text ()
+endpoints = awaitPromise (lock' `select` purchase') >> endpoints
   where
-    isSuitable :: PaymentPubKeyHash -> POSIXTime -> ChainIndexTxOut -> Bool
-    isSuitable pkh now o = case _ciTxOutDatum o of
-        Left _          -> False
-        Right (Datum e) -> case PlutusTx.fromBuiltinData e of
-            Nothing -> False
-            Just d  -> beneficiary d == pkh && deadline d <= now
+    lock' = endpoint @"lock" lock
+    purchase' = endpoint @"purchase" purchase
 
-endpoints :: Contract () VestingSchema Text ()
-endpoints = awaitPromise (give' `select` grab') >> endpoints
-  where
-    give' = endpoint @"give" give
-    grab' = endpoint @"grab" $ const grab
-
-mkSchemaDefinitions ''VestingSchema
+mkSchemaDefinitions ''SignedSchema
 
 mkKnownCurrencies []
