@@ -11,11 +11,6 @@ License-files:       LICENSE
 library
   hs-source-dirs:      src
   exposed-modules:     Week03.Deploy
-                     , Week03.Homework1
-                     , Week03.Homework2
-                     , Week03.Parameterized
-                     , Week03.Solution1
-                     , Week03.Solution2
                      , Week03.Vesting
   build-depends:       aeson
                      , base ^>=4.14.1.0
